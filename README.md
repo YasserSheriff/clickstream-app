@@ -80,6 +80,27 @@ OpenShift notes:
 - `02-cassandra.yaml` is a **single-node demo** (RF=1, 10Gi PVC). Use a multi-node ring or an
   operator for production.
 
+## CI/CD (GitHub Actions)
+
+`.github/workflows/deploy.yml`:
+- **Pull requests to `main`:** run backend and frontend tests only. No secrets are exposed.
+- **Push to `main`:** test, then log in to OpenShift, build the app image in-cluster, and roll out the
+  `clickstream-app` Deployment. Smoke-tests `/readyz` and `/` on the Route afterwards.
+- Cassandra is only touched when `cassandra/` or `openshift/02-cassandra.yaml` change (this restarts
+  the database). `openshift/03-app.yaml` is only re-applied when it changes. Run the workflow
+  manually with `full_deploy` to force both.
+
+Repository secrets (Settings > Secrets and variables > Actions):
+
+| Secret | Value |
+|---|---|
+| `OPENSHIFT_SERVER` | API URL, e.g. `https://c107-e.us-south.containers.cloud.ibm.com:31149` |
+| `OPENSHIFT_TOKEN` | token from `oc whoami -t` (user tokens expire; re-set the secret when it does) |
+
+A namespaced service account (`github-deployer` with the `edit` role in `messaging-app`) is a better
+long-lived credential than a personal login token. It exists in the project; to switch, set
+`OPENSHIFT_TOKEN` to `oc get secret github-deployer-token -n messaging-app -o jsonpath='{.data.token}' | base64 -d`.
+
 ## Known limitations
 
 - The live feed (SSE) is per pod: with several replicas, an event posted to one pod only reaches
