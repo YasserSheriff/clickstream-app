@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickstream-config
+  labels: { app.kubernetes.io/part-of: clickstream }
+data:
+  CASSANDRA_CONTACT_POINTS: cassandra
+  CASSANDRA_PORT: "9042"
+  CASSANDRA_LOCAL_DC: datacenter1
+  CASSANDRA_KEYSPACE: clickstream
+  CASSANDRA_REPLICATION_FACTOR: "1"
+  EVENT_TTL_SECONDS: "604800"
+  # Demo traffic generator; set to "false" when real sites send events to POST /api/events.
+  SIMULATOR_ENABLED: "true"
+  SIMULATOR_EVENTS_PER_SECOND: "5"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickstream-app
+  labels: { app: clickstream-app, app.kubernetes.io/part-of: clickstream }
+  annotations:
+    image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"clickstream-app:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"app\")].image"}]'
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: clickstream-app }
+  template:
+    metadata:
+      labels: { app: clickstream-app, app.kubernetes.io/part-of: clickstream }
+    spec:
+      containers:
+        - name: app
+          image: image-registry.openshift-image-registry.svc:5000/messaging-app/clickstream-app:latest
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: clickstream-config }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickstream-app
+  labels: { app: clickstream-app, app.kubernetes.io/part-of: clickstream }
+spec:
+  selector: { app: clickstream-app }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: clickstream-app
+  labels: { app: clickstream-app, app.kubernetes.io/part-of: clickstream }
+  annotations:
+    # The live feed is a long-lived SSE connection; raise the router idle timeout.
+    haproxy.router.openshift.io/timeout: 1h
+spec:
+  to: { kind: Service, name: clickstream-app }
+  port: { targetPort: http }
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

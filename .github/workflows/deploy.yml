@@ -1,0 +1,161 @@
+name: CI/CD - build and deploy to OpenShift
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_deploy:
+        description: 'Re-apply all manifests and rebuild the Cassandra image (restarts Cassandra)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  OPENSHIFT_NAMESPACE: messaging-app
+  OC_VERSION_CHANNEL: stable-4.16
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Backend tests
+        working-directory: backend
+        run: |
+          npm ci
+          npm test
+
+      - name: Frontend tests and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  deploy:
+    # Only deploy from pushes to main (or a manual run on main). Pull requests never get secrets.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: openshift-deploy
+      cancel-in-progress: false
+    env:
+      OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+      OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check required secrets
+        run: |
+          missing=0
+          for v in OPENSHIFT_SERVER OPENSHIFT_TOKEN; do
+            if [ -z "${!v}" ]; then echo "::error::Repository secret $v is not set"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Install oc CLI
+        run: |
+          base="https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OC_VERSION_CHANNEL}"
+          curl -fsSL -o /tmp/oc.tar.gz "$base/openshift-client-linux.tar.gz"
+          curl -fsSL -o /tmp/sha256sum.txt "$base/sha256sum.txt"
+          expected=$(grep ' openshift-client-linux.tar.gz$' /tmp/sha256sum.txt | awk '{print $1}')
+          echo "$expected  /tmp/oc.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/oc.tar.gz -C /usr/local/bin oc
+          oc version --client
+
+      - name: Log in to OpenShift
+        run: |
+          oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
+          oc project "$OPENSHIFT_NAMESPACE"
+          echo "Logged in as $(oc whoami)"
+
+      - name: Work out what changed
+        id: changes
+        env:
+          BEFORE: ${{ github.event.before }}
+          FULL: ${{ inputs.full_deploy }}
+        run: |
+          zeros=0000000000000000000000000000000000000000
+          if [ "$FULL" = "true" ]; then
+            changed=$(printf 'openshift/\ncassandra/\n'); echo "Manual full deploy"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "$zeros" ]; then
+            # First push of the repo: the cluster was already deployed from these same files.
+            changed=""; echo "Initial push - not touching running Cassandra/app manifests"
+          elif ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed=$(printf 'openshift/\ncassandra/\n'); echo "Previous commit not found (force push?) - treating everything as changed"
+          else
+            changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          fi
+          echo "Changed files:"; echo "$changed"
+          flag() { echo "$changed" | grep -q "$1" && echo true || echo false; }
+          {
+            echo "apply_cassandra=$(flag '^openshift/02-cassandra.yaml\|^openshift/$')"
+            echo "apply_app=$(flag '^openshift/03-app.yaml\|^openshift/$')"
+            echo "build_cassandra=$(flag '^cassandra/')"
+          } >> "$GITHUB_OUTPUT"
+
+      # Builds and image streams are safe to re-apply: they do not restart any pods.
+      - name: Apply build configuration
+        run: oc apply -f openshift/01-builds.yaml
+
+      - name: Build Cassandra image
+        if: steps.changes.outputs.build_cassandra == 'true'
+        run: oc start-build cassandra-openshift --from-dir=cassandra --follow --wait
+
+      - name: Apply Cassandra manifests
+        if: steps.changes.outputs.apply_cassandra == 'true' || steps.changes.outputs.build_cassandra == 'true'
+        run: |
+          # Re-applying resets the image field; the image trigger then re-pins the latest build.
+          oc apply -f openshift/02-cassandra.yaml
+          oc rollout status statefulset/cassandra --timeout=600s
+
+      - name: Apply app manifests
+        if: steps.changes.outputs.apply_app == 'true'
+        run: oc apply -f openshift/03-app.yaml
+
+      - name: Build app image
+        run: oc start-build clickstream-app --from-dir=. --follow --wait
+
+      - name: Wait for rollout of the new image
+        run: |
+          digest=$(oc get istag clickstream-app:latest -o jsonpath='{.image.metadata.name}')
+          echo "New image digest: $digest"
+          # The image trigger patches the Deployment a few seconds after the build is pushed.
+          for i in $(seq 1 30); do
+            current=$(oc get deployment clickstream-app -o jsonpath='{.spec.template.spec.containers[0].image}')
+            case "$current" in *"$digest"*) echo "Deployment now references the new image"; break;; esac
+            [ "$i" = 30 ] && { echo "::error::Deployment did not pick up the new image"; exit 1; }
+            sleep 5
+          done
+          oc rollout status deployment/clickstream-app --timeout=300s
+
+      - name: Smoke test
+        run: |
+          host=$(oc get route clickstream-app -o jsonpath='{.spec.host}')
+          for _ in $(seq 1 12); do
+            if curl -fsS "https://$host/readyz" && curl -fsS -o /dev/null "https://$host/"; then
+              echo; echo "Deployed OK: https://$host"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Smoke test failed"; oc get pods; exit 1

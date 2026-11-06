@@ -1,0 +1,45 @@
+# Image streams + binary Docker builds. Builds run inside the cluster (amd64) and push to the
+# internal registry, so no external registry credentials are needed.
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: clickstream-app
+  labels: { app.kubernetes.io/part-of: clickstream }
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: cassandra-openshift
+  labels: { app.kubernetes.io/part-of: clickstream }
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: clickstream-app
+  labels: { app.kubernetes.io/part-of: clickstream }
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to: { kind: ImageStreamTag, name: "clickstream-app:latest" }
+  resources:
+    limits: { cpu: "2", memory: 3Gi }
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: cassandra-openshift
+  labels: { app.kubernetes.io/part-of: clickstream }
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to: { kind: ImageStreamTag, name: "cassandra-openshift:latest" }
