@@ -12,7 +12,7 @@ const clampInt = (v, def, min, max) => {
  * Build the express app. `store` needs: ready, ping(), writeEvent(), recentEvents(),
  * userEvents(), timeseries(), topPages().
  */
-export function createApp({ store, staticDir, version = '1.0.0' }) {
+export function createApp({ store, staticDir, version = '1.0.1' }) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '64kb' }));
