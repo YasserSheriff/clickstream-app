@@ -101,6 +101,14 @@ A namespaced service account (`github-deployer` with the `edit` role in `messagi
 long-lived credential than a personal login token. It exists in the project; to switch, set
 `OPENSHIFT_TOKEN` to `oc get secret github-deployer-token -n messaging-app -o jsonpath='{.data.token}' | base64 -d`.
 
+### Deploying to another project
+
+Pushes to `main` always deploy to `messaging-app`. To deploy to a different project, create it
+first (`oc new-project <name>`), then run the workflow manually: **Actions > CI/CD > Run workflow**,
+set `namespace`, and tick `full_deploy` for the first run so Cassandra and the app are both created.
+The workflow rewrites the image registry path in the manifests to the chosen project. The token in
+`OPENSHIFT_TOKEN` must be allowed to edit that project.
+
 ## Known limitations
 
 - The live feed (SSE) is per pod: with several replicas, an event posted to one pod only reaches

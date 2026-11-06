@@ -12,12 +12,16 @@ on:
         description: 'Re-apply all manifests and rebuild the Cassandra image (restarts Cassandra)'
         type: boolean
         default: false
+      namespace:
+        description: 'OpenShift project to deploy to (must already exist and be writable by the token)'
+        type: string
+        default: messaging-app
 
 permissions:
   contents: read
 
 env:
-  OPENSHIFT_NAMESPACE: messaging-app
+  OPENSHIFT_NAMESPACE: ${{ inputs.namespace || 'messaging-app' }}
   OC_VERSION_CHANNEL: stable-4.16
 
 jobs:
@@ -83,6 +87,12 @@ jobs:
           sudo tar -xzf /tmp/oc.tar.gz -C /usr/local/bin oc
           oc version --client
 
+      - name: Validate namespace input
+        run: |
+          case "$OPENSHIFT_NAMESPACE" in
+            ''|*[!a-z0-9-]*|-*|*-) echo "::error::Invalid namespace '$OPENSHIFT_NAMESPACE'"; exit 1;;
+          esac
+
       - name: Log in to OpenShift
         run: |
           oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
@@ -126,12 +136,12 @@ jobs:
         if: steps.changes.outputs.apply_cassandra == 'true' || steps.changes.outputs.build_cassandra == 'true'
         run: |
           # Re-applying resets the image field; the image trigger then re-pins the latest build.
-          oc apply -f openshift/02-cassandra.yaml
+          sed "s#/messaging-app/#/${OPENSHIFT_NAMESPACE}/#g" openshift/02-cassandra.yaml | oc apply -f -
           oc rollout status statefulset/cassandra --timeout=600s
 
       - name: Apply app manifests
         if: steps.changes.outputs.apply_app == 'true'
-        run: oc apply -f openshift/03-app.yaml
+        run: sed "s#/messaging-app/#/${OPENSHIFT_NAMESPACE}/#g" openshift/03-app.yaml | oc apply -f -
 
       - name: Build app image
         run: oc start-build clickstream-app --from-dir=. --follow --wait
