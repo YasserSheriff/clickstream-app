@@ -16,6 +16,9 @@ export const config = {
     // Optional: DataStax Astra DB (managed Cassandra) via Secure Connect Bundle + app token.
     astraBundlePath: process.env.ASTRA_BUNDLE_PATH || undefined,
     astraToken: process.env.ASTRA_TOKEN || undefined,
+    // Consistency level name (e.g. LOCAL_QUORUM). Astra rejects ONE/LOCAL_ONE writes, so it defaults
+    // to LOCAL_QUORUM when ASTRA_BUNDLE_PATH is set; otherwise the driver default is kept.
+    consistency: process.env.CASSANDRA_CONSISTENCY || undefined,
     // On Astra the keyspace is created in the portal; set to false to skip CREATE KEYSPACE.
     createKeyspace: bool(process.env.CASSANDRA_CREATE_KEYSPACE, true),
     eventTtlSeconds: int(process.env.EVENT_TTL_SECONDS, 7 * 24 * 3600),

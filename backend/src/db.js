@@ -12,7 +12,7 @@ function assertIdentifier(name) {
   return name;
 }
 
-function clientOptions(cfg, withKeyspace) {
+export function clientOptions(cfg, withKeyspace) {
   const opts = { localDataCenter: cfg.localDataCenter };
   if (cfg.astraBundlePath) {
     opts.cloud = { secureConnectBundle: cfg.astraBundlePath };
@@ -23,6 +23,12 @@ function clientOptions(cfg, withKeyspace) {
     if (cfg.username) opts.credentials = { username: cfg.username, password: cfg.password };
   }
   if (withKeyspace) opts.keyspace = cfg.keyspace;
+  const level = cfg.consistency || (cfg.astraBundlePath ? 'LOCAL_QUORUM' : undefined);
+  if (level) {
+    const code = types.consistencies[level.toLowerCase().replace(/_(\w)/g, (_m, c) => c.toUpperCase())];
+    if (code === undefined) throw new Error(`invalid CASSANDRA_CONSISTENCY: ${level}`);
+    opts.queryOptions = { consistency: code };
+  }
   return opts;
 }
 
