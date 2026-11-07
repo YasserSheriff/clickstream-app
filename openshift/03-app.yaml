@@ -9,6 +9,11 @@ data:
   CASSANDRA_LOCAL_DC: datacenter1
   CASSANDRA_KEYSPACE: clickstream
   CASSANDRA_REPLICATION_FACTOR: "1"
+  # DataStax Astra DB. Needs Secrets `astra-scb` (key secure-connect.zip) and `astra-token`
+  # (key ASTRA_TOKEN) in the project. Astra cannot create keyspaces, so create `clickstream` first.
+  # While ASTRA_BUNDLE_PATH is set, CASSANDRA_CONTACT_POINTS is ignored by the app.
+  ASTRA_BUNDLE_PATH: /etc/astra/secure-connect.zip
+  CASSANDRA_CREATE_KEYSPACE: "false"
   EVENT_TTL_SECONDS: "604800"
   # Demo traffic generator; set to "false" when real sites send events to POST /api/events.
   SIMULATOR_ENABLED: "true"
@@ -36,6 +41,9 @@ spec:
             - { name: http, containerPort: 8080 }
           envFrom:
             - configMapRef: { name: clickstream-config }
+            - secretRef: { name: astra-token }
+          volumeMounts:
+            - { name: astra-scb, mountPath: /etc/astra, readOnly: true }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
@@ -53,6 +61,9 @@ spec:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 10
             failureThreshold: 3
+      volumes:
+        - name: astra-scb
+          secret: { secretName: astra-scb }
 ---
 apiVersion: v1
 kind: Service
